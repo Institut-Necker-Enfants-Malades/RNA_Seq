@@ -1,2 +1,2 @@
-# RNA_Seq
+# `RNA_Seq`
 RNA-Seq pipelines
