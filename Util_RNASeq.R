@@ -183,9 +183,6 @@ Plot_modules_genes <- function(data, metadata, df_cluster, gene_to_remove = NULL
     gene <- selected_genes[i]
     gene_values <- data[[gene]]
     
-    # Generate dynamic title if required
-    plot_title <- if (dynamic_title) paste("Expression of", gene, "in", cluster_value) else title
-    
     # Create the plot for the current gene
     plots[[i]] <- data %>%
       mutate(Condition = fct_reorder(Condition, gene_values, .desc = order)) %>%
