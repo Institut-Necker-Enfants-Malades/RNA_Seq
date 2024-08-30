@@ -1,0 +1,1060 @@
+## ----setup, include=FALSE---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE, eval= TRUE, warning = FALSE, message = FALSE, prompt = FALSE, include = TRUE, cache = TRUE, cache.lazy = FALSE)
+
+
+## ----clean_env, include=FALSE-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+rm(list=ls())
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Load required libraries for plot and data manipulation
+library(RColorBrewer)
+library(pheatmap)
+library(dplyr)
+library(msigdbr)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+library(gridExtra)
+library(tidyverse)
+library(paletteer)
+library(caret)
+library(readxl)
+library(factoextra)
+library(FactoMineR)
+# Load required libraries for Coexpression analysis
+library(WGCNA)
+# Load required libraries for Diff expr analysis
+library(DESeq2)
+library(edgeR)
+library(limma)
+# Load required libraries for enrichment analysis
+library(fgsea)
+library(org.Mm.eg.db)
+library(enrichR)
+library(clusterProfiler)
+library(enrichplot)
+# Load required libraries for Gene regulatory network
+library(GENIE3)
+library(igraph)
+library(biomaRt)
+library(AnnotationDbi)
+# Load required libraries for Network visualization
+# https://cytoscape.org/cytoscape-automation/for-scripters/R/notebooks/
+library(RCy3)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+source("~/INEM/Projets/Fabiola/scripts/Util_RNASeq.R")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+get_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+pathwd <- "/Users/lamine/INEM/Projets/Fabiola"
+# Set "get_path" as Working Directory
+setwd(pathwd)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+options(stringsAsFactors = FALSE)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+datExpr00 <- read.csv("/Users/lamine/INEM/Projets/Fabiola/Data/gene_expression.xls", sep="")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+selected_columns <- c("tpm_DW1", "tpm_DW2", "tpm_DW3", "tpm_DW4", "tpm_DK1", "tpm_DK2", "tpm_DK3", "tpm_DK4")
+wt_columns <- c("tpm_DW1", "tpm_DW2", "tpm_DW3", "tpm_DW4")
+ko_columns <- c("tpm_DK1", "tpm_DK2", "tpm_DK3", "tpm_DK4")
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Ensure gene_symbol column exists
+if("gene_symbol" %in% colnames(datExpr00)) {
+  datExpr0 <- datExpr00 %>%
+    dplyr::select(gene_symbol, selected_columns) %>%
+    column_to_rownames(var = "gene_symbol") %>%
+    t() %>%
+    as.data.frame()
+
+  print(dim(datExpr0))
+} else {
+  stop("Column 'gene_symbol' not found in datExpr00.")
+}
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+patterns <- c("DW", "DK")
+metadata_labels <- c("DW", "DK")
+metadata_file <- define_metadata(data = datExpr0, selected_columns = rownames(datExpr0), split = "_", patterns, metadata_labels, paterns_num = 2)
+
+print(metadata_file) %>% dplyr::glimpse()
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+gsg = goodSamplesGenes(datExpr0, verbose = 3);
+gsg$allOK
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+datExpr0 = datExpr0[,gsg$goodGenes]
+dim(datExpr0)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+selected_genes <- c("Yap1", "Wwtr1", "Birc5", "Areg", "Ankrd1")
+fig.genes <-  Plot_genes(tpm_data, metadata_file_all$condition, selected_genes, title = "Gene Expression in WT and KO days 7", ylab = "Expression of : ", xlab = "Days", filllab="Days")
+plot(fig.genes)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+pheatmap(datExpr0,cluster_col=T,cluster_row=T,show_rownames=T,show_colnames=F,fontsize=6,annotation_row = metadata_file, color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), scale = "column", fontsize_col = 10, fontsize_row = 10, main = "Genes expression across condition before filtering")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene_data <- datExpr00
+
+# Select WT and KO samples
+wt_samples <- gene_data %>% 
+  dplyr::select(wt_columns)
+ko_samples <- gene_data %>% 
+  dplyr::select(ko_columns)
+
+# Calculate mean expression for WT and KO samples
+gene_data <- gene_data %>%
+  mutate(WT_mean = rowMeans(wt_samples, na.rm = TRUE),
+         KO_mean = rowMeans(ko_samples, na.rm = TRUE))
+
+# Perform Wilcoxon rank-sum tests
+p_values <- apply(gene_data, 1, function(row) {
+  wilcox.test(as.numeric(row[wt_columns]),
+              as.numeric(row[ko_columns]))$p.value
+})
+
+# Add p-values to the data frame
+gene_data <- gene_data %>%
+  mutate(p_value = p_values)
+
+# Adjust p-values for multiple testing using FDR
+gene_data <- gene_data %>%
+  mutate(adj_p_value = p.adjust(p_value, method = "fdr"))
+
+# Plot the distribution of p-values
+ggplot(gene_data, aes(x = p_value)) +
+  geom_histogram(fill = "blue", color = "black" ) + stat_bin(breaks = 50) +
+  theme_minimal() +
+  ggtitle("Distribution of P-values")
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Identify significant genes with adjusted p-value < 0.05
+significant_genes <- gene_data %>%
+  filter(adj_p_value < 0.05) %>%
+  arrange(adj_p_value)
+
+# Select expression data for significant genes
+significant_genes <- significant_genes %>%
+  dplyr::select(gene_symbol,selected_columns, WT_mean, KO_mean, p_value)
+
+datExpr <- significant_genes %>%
+  dplyr::select(selected_columns)
+rownames(datExpr) <- significant_genes$gene_symbol
+datExpr <- as.data.frame(t(datExpr))  
+
+# Create a heatmap
+pheatmap(datExpr,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         scale = "column",
+         main = "Heatmap of Significant Genes (FDR Adjusted)")
+
+pheatmap(datExpr, cluster_col=T, cluster_row=T, show_rownames=T, show_colnames=F, fontsize=6,
+         annotation_row = metadata_file, color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), 
+         scale = "column", fontsize_col = 10, fontsize_row = 10, 
+         main = "Genes expression across condition after filtering")
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Let's create a function for log2 transformation 
+logtransformation <- function(x) {return(log2(x+1))}
+
+### Log 2 transformationFor TPM
+datExpr = logtransformation(datExpr)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene.stats.tpm <- data.frame(
+  mean = apply(datExpr, 2, mean),
+  var = apply(datExpr, 2, var),
+  sd = apply(datExpr, 2, sd)
+)
+
+plot(x = gene.stats.tpm$mean, y = gene.stats.tpm$var,
+     main = "Mean / variance plot",
+     xlab = "Mean per gene",
+     ylab = "Var per gene",  log="xy",
+     col = densCols(x = gene.stats.tpm$mean, y = gene.stats.tpm$var))
+abline()
+
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+table(gene.stats.tpm$var>0.02)
+table(gene.stats.tpm$mean>0.4)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+plot(x = gene.stats.tpm$mean, y = gene.stats.tpm$sd,
+     main = "Mean / SD plot",
+     xlab = "Mean per gene",
+     ylab = "Sd per gene", log="xy",
+     col = densCols(x = gene.stats.tpm$mean, y = gene.stats.tpm$sd))
+abline()
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+meanExpressionByArray=apply(datExpr0_log2,2,mean, na.rm=T)
+head(meanExpressionByArray)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE, results='asis'--------------------------------------------------------------------------------------------------------------------------------------------
+barplot(meanExpressionByArray,
+xlab = "Genes", ylab = "Mean expression",
+main ="Mean expression across Genes",
+names.arg = colnames(datExpr0_log2), cex.names = 0.3)
+abline(h=2.8, col="blue")
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+Zerovar=nearZeroVar(datExpr)
+Zerovar
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+Var=apply(datExpr0_log2, 2, function(x){sd(x)/mean(x)} )
+hist(Var, xlab = "Variance", main = "Histogram of the dispersion coefficient of Genes", col = "deepskyblue3")
+abline(v=0.2, col="red")
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+Trievar=which(Var>0.2)
+## Let's select sample with more dispersion coefficcient (which are then utliers ) 
+length(Trievar) 
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+datExpr0_log2 <- datExpr0_log2[,Trievar]
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene.stats.tpm <- data.frame(
+  mean = apply(datExpr0_log2, 2, mean),
+  var = apply(datExpr0_log2, 2, var),
+  sd = apply(datExpr0_log2, 2, sd)
+)
+
+plot(x = gene.stats.tpm$mean, y = gene.stats.tpm$var,
+     main = "Mean / variance plot",
+     xlab = "Mean per gene",
+     ylab = "Var per gene",  log="xy",
+     col = densCols(x = gene.stats.tpm$mean, y = gene.stats.tpm$var))
+abline()
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# # Heatmap of old module eigen-genes and samples
+# #pdf(file="oldMEs.pdf",heigh=80,width=20)
+# treatment0 <-as.data.frame( metadata_file$condition)
+# rownames(treatment0) <- rownames(datExpr0)
+# names(treatment0) <- "Condition"
+pheatmap(datExpr0_log2,cluster_col=T,cluster_row=T,show_rownames=T,show_colnames=F,fontsize=6, annotation_row = metadata_file[,-1], color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), scale = "column", fontsize_col = 10, fontsize_row = 10, main = "Genes expression across condition with Log2 TPM")
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+datExpr = datExpr0_log2
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Choose a set of soft threshold parameters
+powers = c(c(1:20), seq(from = 22, to=30, by=2))
+
+
+
+sft = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5) 
+# Scale-free topology fit index as a function of the soft-thresholding power
+#pdf(file = "2-n-sft.pdf", width = 9, height = 5);
+par(mfrow = c(1,2));
+cex1 = 0.9;
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red") 
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity")) 
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Turn data expression into topological overlap matrix
+power= sft$powerEstimate #4
+
+# Option 1: automatic
+cor <- WGCNA::cor
+net = blockwiseModules(datExpr, power = power,
+                       TOMType = "signed", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = FALSE,
+                       verbose = 3)
+cor<- stats::cor
+# unsigned -> nodes with positive & negative correlation are treated equally 
+# signed -> nodes with negative correlation are considered *unconnected*, treated as zero
+
+sizeGrWindow(12, 9)
+mergedColors = labels2colors(net$colors)
+#pdf(file = "4-module_tree_blockwise.pdf", width = 8, height = 6);
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+
+## ----include=TRUE, echo =TRUE, message = FALSE, warning = FALSE, cache=TRUE, results='asis'---------------------------------------------------------------------------------------------------------------------------------
+# We will use the power to define an adjacency matrix which is a symetric matrix with non-negative values. This matrix is a dissimilarity matrix.   
+softPower = sft$powerEstimate;
+adjacency = adjacency(datExpr, power = softPower)
+# Turn adjacency into topological overlap. This topological Overlap matrix (TOM) is a similarity matrix. 
+TOM = TOMsimilarity(adjacency);
+# For the biological analyze, the TOM-based dissimilarity leads to more distinct gene modules than the similarity. That's why we transform the similarity matrix in a dissimilarity matrix. 
+dissTOM = 1-TOM
+# Info : This step take around 30min for the 14809 genes. 
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+geneTree = hclust(as.dist(dissTOM), method = "average");
+plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity",
+     labels = FALSE, hang = 0.04);
+
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+minModuleSize = 70;
+
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM,
+deepSplit = 2, pamRespectsDendro = FALSE,
+minClusterSize = minModuleSize);
+table(dynamicMods)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",dendroLabels = FALSE,
+                    hang = 0.03,addGuide = TRUE, guideHang = 0.05,main = "Gene dendrogram and module colors")
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+####  if you want to see the set of genes grouped on orange color
+print("Here are 20 genes of the module black are :") 
+head(names(datExpr)[dynamicColors=="black"], 20)
+print("Here are 20 genes of the module cyan are :") 
+head(names(datExpr)[dynamicColors=="cyan"], 20)
+print("Here are 20 genes of the module turquoise are :") 
+head(names(datExpr)[dynamicColors=="turquoise"], 20)
+
+
+## ----include=TRUE,  message = FALSE, warning = FALSE, cache=TRUE------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Calculate eigengenes
+MEList = moduleEigengenes(datExpr, colors = dynamicColors)
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average");
+# Plot the result
+sizeGrWindow(7, 6)
+plot(METree, main = "Clustering of module eigengenes",
+     xlab = "", sub = "")
+
+
+
+## ----include=FALSE, echo = FALSE, message = FALSE, warning = FALSE, cache=TRUE----------------------------------------------------------------------------------------------------------------------------------------------
+# We want a high correlation so we use 0.20 that's mean we will have at genes with least 80 percent of correlation.^
+MEDissThres = 0.20
+# Plot the cut line into the dendrogram
+sizeGrWindow(7, 6)
+plot(METree, main = "Clustering of module eigengenes",
+xlab = "", sub = "")
+abline(h=MEDissThres, col = "red")
+# Call an automatic merging function
+merge = mergeCloseModules(datExpr, dynamicMods, cutHeight = MEDissThres, verbose = 3)
+# The merged module colors
+mergedColors = merge$colors;
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs
+
+# Plot merged module tree
+#pdf(file = "5-merged_Module_Tree.pdf", width = 12, height = 9)  
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors), 
+                    c("Dynamic Tree Cut", "Merged dynamic"), dendroLabels = FALSE, 
+                    hang = 0.03, addGuide = TRUE, guideHang = 0.05) 
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+plotEigengeneNetworks(mergedMEs, metadata_file$condition)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+output_for_cytoscape <- "/Users/lamine/INEM/Projets/Fabiola/Outputs/DW_DK/output_for_cytoscape"
+
+
+## ----include = FALSE--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Export the gene list of old modules 
+for (i in 1:length(merge$oldMEs)){
+  modules = c(substring(names(merge$oldMEs)[i], 3));
+  genes = colnames(datExpr)
+  inModule = is.finite(match(merge$colors,modules))
+  modGenes = genes[inModule]
+  modTOM=TOM[inModule,inModule]
+  dimnames(modTOM)=list(modGenes,modGenes)
+  cyt = exportNetworkToCytoscape(modTOM,
+                                 edgeFile = paste(paste0(output_for_cytoscape, "/orign_CytoscapeInput-edges-"), paste(modules, collapse="-"), ".txt", sep=""),
+                                 nodeFile = paste(paste0(output_for_cytoscape, "/orign_CytoscapeInput-nodes-"), paste(modules, collapse="-"), ".txt", sep=""),
+                                 weighted = TRUE, threshold = -1, nodeNames = modGenes, nodeAttr = dynamicColors[inModule]);
+}
+# Export the gene list of new modules 
+for (i in 1:length(merge$newMEs)){
+  modules = c(substring(names(merge$newMEs)[i], 3));
+  genes = colnames(datExpr)
+  inModule = is.finite(match(merge$colors,modules))
+  modGenes = genes[inModule]
+  modTOM=TOM[inModule,inModule]
+  dimnames(modTOM)=list(modGenes,modGenes)
+  cyt = exportNetworkToCytoscape(modTOM,
+                                 edgeFile = paste(paste0(output_for_cytoscape, "/merge_CytoscapeInput-edges-"), paste(modules, collapse="-"), ".txt", sep=""),
+                                 nodeFile = paste(paste0(output_for_cytoscape, "/merge_CytoscapeInput-nodes-"), paste(modules, collapse="-"), ".txt", sep=""),
+                                 weighted = TRUE, threshold = -1, nodeNames = modGenes, nodeAttr = dynamicColors[inModule]);
+}
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Heatmap of old module eigen-genes and samples
+pheatmap(net$MEs,cluster_col=F,cluster_row=T,show_rownames=T,show_colnames=T,fontsize=6, annotation_row = metadata_file, color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), scale = "column",
+         fontsize_col = 10, fontsize_row = 10, main = "WT vs KO days 7 Modules")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+pheatmap(merge$oldMEs,cluster_col=F,cluster_row=T,show_rownames=T,show_colnames=T,fontsize=6, annotation_row = metadata_file, color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), scale = "column",
+         fontsize_col = 10, fontsize_row = 10, main = "WT vs KO days 14 Modules")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+pheatmap(merge$newMEs,cluster_col=F,cluster_row=T,show_rownames=T,show_colnames=T,fontsize=6, annotation_row = metadata_file, color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), scale = "column",
+         fontsize_col = 10, fontsize_row = 10, main = "WT vs KO day 28 Modules")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+heatmap_modules_genes(data = datExpr, merge = net, metadata = metadata_file, modnumb = 1,  title = "WT vs KO genes in module using Net")
+heatmap_modules_genes(data = datExpr, merge = net, metadata = metadata_file, modnumb = 2,  title = "WT vs KO genes in module using Net")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+heatmap_modules_genes(data = datExpr, merge = merge, metadata = metadata_file, modnumb = 0, show_colnames = F,  title = "WT vs KO genes in module")
+heatmap_modules_genes(data = datExpr, merge = merge, metadata = metadata_file, modnumb = 15, show_colnames = F,  title = "WT vs KO genes in module")
+heatmap_modules_genes(data = datExpr, merge = merge, metadata = metadata_file, modnumb = 9, show_colnames = F,  title = "WT vs KO genes in module")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_cluster_genes <- function(data, metadata, merge, modnumb = 1, title= " ",
+                             cutree_cols = 2, cutree_rows = 2, wtcluster = 1, kocluster = 2){
+
+  #plot
+  pheatmap <- heatmap_modules_genes(data = datExpr, merge = merge, metadata = metadata_file, 
+                                    modnumb = modnumb,  title = "WT vs KO genes in module")
+  dev.off()
+  
+  df <- data.frame(cluster = cutree(pheatmap$tree_col, k = 2))
+  df[df$cluster==kocluster,] <- "KO UP"
+  df[df$cluster==wtcluster,] <- "WT UP"
+  df$genes <- rownames(df)
+
+  return(df)
+  
+}
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+df_cluster9 <- df_cluster_genes(data = datExpr, merge = merge, metadata = metadata_file, modnumb = 9,
+                               wtcluster = 2, kocluster = 1, title = "WT vs KO genes in module")
+
+df_cluster15 <- df_cluster_genes(data = datExpr, merge = merge, metadata = metadata_file, modnumb = 15,
+                               wtcluster = 1, kocluster = 2, title = "WT vs KO genes in module")
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene_plots_wt <- Plot_modules_genes(data = datExpr, metadata = metadata_file, df_cluster = df_cluster9, gene_to_remove = NULL, cluster_value = "WT UP",
+                                    title= "Gene Expression up in WT in Cluster 9", xlab='Condition', 
+                            ylab="Expression: ", filllab="Group", order = TRUE, ntop = 10)
+
+gene_plots_ko <- Plot_modules_genes(data = datExpr, metadata = metadata_file, df_cluster = df_cluster9, gene_to_remove = NULL, cluster_value = "KO UP",
+                                    title= "Gene Expression down in WT in Cluster 9", xlab='Condition', 
+                            ylab="Expression: ", filllab="Group", order = FALSE, ntop = 10)
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene_plots_wt <- Plot_modules_genes(data = datExpr, metadata = metadata_file, df_cluster = df_cluster15, gene_to_remove = "1700067K01Rik", cluster_value = "WT UP",
+                                    title= "Gene Expression up in WT in Cluster 15", xlab='Condition', 
+                            ylab="Expression: ", filllab="Group", order = TRUE, ntop = 10)
+
+gene_plots_ko <- Plot_modules_genes(data = datExpr, metadata = metadata_file, df_cluster = df_cluster15, gene_to_remove = NULL, cluster_value = "KO UP",
+                                    title= "Gene Expression down in WT in Cluster 15", xlab='Condition', 
+                            ylab="Expression: ", filllab="Group", order = FALSE, ntop = 10)
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Load the gene expression matrix (assuming it's already quantified and normalized)
+count_matrix <- as.matrix(t(datExpr))
+condition <- factor(metadata_file$condition)
+
+# Convert to DESeq2 object
+dds <- DESeqDataSetFromMatrix(countData = round(count_matrix),
+                               colData = DataFrame(condition),
+                               design = ~ condition)
+
+# 4. Exploratory Data Analysis
+
+# Principal Component Analysis (PCA)
+vsd <- varianceStabilizingTransformation(dds)
+#vsd <- vst(dds, blind = FALSE)
+plotPCA(vsd, intgroup = "condition")
+
+# Sample clustering
+sample_dist <- dist(t(assay(vsd)))
+plot(hclust(sample_dist))
+
+# Gene clustering and heatmap
+select_genes <- rowSums(counts(dds)) > 10
+d <- as.dist(1 - cor(assay(vsd)[select_genes, ], method = "pearson"))
+gene_clust <- hclust(d, method = "complete")
+pheatmap(assay(vsd)[select_genes, ],
+         #cluster_rows = gene_clust$order,
+         show_rownames = FALSE,
+         annotation_col = metadata_file[,-1])
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# 5. Differential Expression Analysis
+dds <- DESeq(dds)
+res_deseq2 <- results(dds)
+# edgeR
+dge <- DGEList(counts = count_matrix)
+dge <- calcNormFactors(dge)
+design <- model.matrix(~ condition, data = data.frame(condition))
+dge <- estimateDisp(dge, design)
+fit <- glmFit(dge, design)
+lrt <- glmLRT(fit, coef = 2)
+res_edgeR <- topTags(lrt, n = nrow(count_matrix))
+
+# limma-voom
+v <- voom(count_matrix, design, plot = FALSE)
+fit <- lmFit(v, design)
+res_limma <- eBayes(fit)
+res_limma <- topTable(res_limma, number = Inf)
+
+# Compare and save results
+all_results <- list(DESeq2 = res_deseq2,
+                    edgeR = res_edgeR,
+                    limma = res_limma)
+# plot method comparaison
+# Extract log fold changes and adjusted p-values
+logfc_deseq2 <- all_results$DESeq2$log2FoldChange
+pval_deseq2 <- all_results$DESeq2$padj
+
+logfc_edgeR <- all_results$edgeR$logFC
+pval_edgeR <- all_results$edgeR$FDR
+
+logfc_limma <- all_results$limma$logFC
+pval_limma <- all_results$limma$adj.P.Val
+
+all_results$method <- factor(all_results$method,
+                            levels = c("DESeq2","EdgeR","Limma"))
+# Filter for significant genes
+res_sig <- res_limma[!is.na(res_limma$P.Value), ]
+res_sig <- res_sig[res_sig$P.Value < 0.01,  ]
+summary(res_sig)
+
+# 6. Gene Signature Identification
+# Example: Identify top 100 upregulated genes in condition A vs. B
+top_expr <- data.frame(res_sig) %>% dplyr::arrange(desc(logFC))
+top_expr <- top_expr[1:100,]
+top_genes <- rownames(top_expr)
+top_genes
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+library(GSVA)
+
+# Charger les ensembles de gènes (exemple avec un fichier GMT)
+gmt_file <- "/Users/lamine/Downloads/mh.all.v2023.2.Mm.symbols.gmt"
+geneset <- read.gmt(gmt_file)
+
+# Transformer le dataframe en liste de gènes par term
+geneterm <- geneset %>%
+  group_by(term) %>%
+  summarise(genes = list(gene)) %>%
+  pull(genes)
+names(geneterm) <- unique(geneset$term)
+
+Module = datExpr[,names(datExpr)[merge$colors=="9"]]
+Module = as.matrix(t(Module))
+# Calculate GSVA Score
+gsvaPar <- gsvaParam(Module, geneterm)
+# Effectuer l'analyse ssGSEA
+gsva.es <- gsva(gsvaPar, verbose=FALSE)
+
+# Analyse differential
+condition <- factor(metadata_file$condition)
+mod <- model.matrix(~ condition, data = data.frame(condition))
+#colnames(mod) <- c("WT", "KO")
+fit <- lmFit(gsva.es, mod)
+fit <- eBayes(fit)
+res <- decideTests(fit, p.value=0.05)
+res_limma <- topTable(fit, number = Inf)
+
+pheatmap(gsva.es,cluster_col=T,cluster_row=T,show_rownames=T,show_colnames=T,fontsize=6, annotation_col = metadata_file, 
+         color = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), scale = "row",
+         fontsize_col = 10, fontsize_row = 10, main = "GSVA enrichment score Module 9 in WT vs KO days 28")
+summary(res)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Save.Gsea.files <- "/Users/lamine/INEM/Projets/Fabiola/Outputs/DW_DK/Enrichment/Gsea files"
+Save.Gsea.results <- "/Users/lamine/INEM/Projets/Fabiola/Outputs/DW_DK/Enrichment/results/R outputs"
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene_diff <- read.csv("/Users/lamine/INEM/Projets/Fabiola/Data/gene_diff.xls", sep="")
+
+deseq2_diff <- Select_diff(data = gene_diff, patterns = "DW.vs.DK")
+# Generate Genelist
+geneList <- Save_Genelist(deseq2_diff, deseq2_diff$Log2FC, Module = datExpr[,names(datExpr)[merge$colors=="9"]])
+
+geneList_All <- Save_Genelist(deseq2_diff, deseq2_diff$Log2FC, Module = NULL)
+
+Save_GSEA_Rnk(deseq2_diff, deseq2_diff$Log2FC, path = Save.Gsea.files, file.name = "/Modules15_Genes_list.rnk")
+
+Save__GSEA_Expr(datExpr, path = paste0(Save.Gsea.files, "/Expression/"), file.name = "Genes_Expr_DWDK", samples.position = "row")
+
+# Gene Set Enrichment Analysis (GSEA). Here Only GO but you can use GSEA.
+gseaData <- gseGO(geneList = geneList,
+                  ont = "ALL",
+                  keyType = "SYMBOL",
+                  nPerm = 1000,
+                  minGSSize = 3,
+                  maxGSSize = 500,
+                  pvalueCutoff = 0.05,
+                  verbose = FALSE,
+                  OrgDb = org.Mm.eg.db,
+                  pAdjustMethod = "none")
+# Example with GSEA. geneset was download from Msigdb.
+gseaData <- GSEA(geneList = geneList_All, TERM2GENE = geneset)
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+gseaDataGO <- summary(gseaData)
+write.table(gseaDataGO, paste0(Save.Gsea.results, "/Gsea_Go_module15.txt"), sep = "\t", row.names = FALSE, quote = FALSE)
+gseaData
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::dotplot(gseaData, showCategory=10, split=".sign") +
+  facet_grid(.~.sign) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.text.y = element_text(size = 8))
+#ggsave(paste0(Save.Gsea.results, "/Enrichment_AW_AK_module10_genes.png"), width = 1200, height = 1000)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::dotplot(gseaData, showCategory=c("hippo signaling", "transcription coactivator activity", "digestive tract development", 
+                                             "negative regulation of organelle organization", "cell division", "cell periphery"), split=".sign") +
+  facet_grid(.~.sign) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.text.y = element_text(size = 8))
+#ggsave(paste0(Save.Gsea.results, "/Enrichment_AW_AK_module10_genes.png"), width = 1200, height = 1000)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+heatmap_pathway_genes(data = datExpr, gsea_summary = gseaDataGO, pathway = "T cell proliferation") 
+heatmap_pathway_genes(data = datExpr, gsea_summary = gseaDataGO, pathway = "leukocyte mediated immunity")
+heatmap_pathway_genes(data = datExpr, gsea_summary = gseaDataGO, pathway = "muscle myosin complex")
+#heatmap_pathway_genes(data = datExpr, gsea_summary = gseaDataGO, pathway = "sterol esterase activity")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::cnetplot(gseaData, categorysize='pvalue', foldChange = geneList, showCategory=3, colorEdge=TRUE)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+p1 <- enrichplot::heatplot(gseaData, showCategory=5)
+p2 <- enrichplot::heatplot(gseaData, foldChange = geneList, showCategory=5) + scale_fill_paletteer_c("viridis::viridis")
+
+cowplot::plot_grid(p1, p2, ncol = 1, labels = LETTERS[1:2])
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::heatplot(gseaData, foldChange = geneList, showCategory=10) + scale_fill_paletteer_c("viridis::viridis")
+#ggsave(paste0(Save.Gsea.results, "/Enrichment_AW_AK_module10_functional_classification_genes.png"), width = 1500, height = 1000)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::ridgeplot(gseaData) +
+  labs(x="Enrichment Distribution") +
+  theme(axis.text.y = element_text(size = 8))
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::gseaplot(gseaData, by = 'all', title = gseaData$Description[1], geneSetID = 1)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::gseaplot2(gseaData, title = gseaData$Description[1], geneSetID = 1)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichplot::gseaplot2(gseaData, geneSetID = 1:5,
+                      color = c("#E495A5", "#86B875", "#7DB0DD"))
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+terms <- gseaData$Description[1:3]
+enrichplot::pmcplot(terms, 2010:2024, proportion = FALSE)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+cytoscapePing () # make sure cytoscape is open
+cytoscapeVersionInfo ()
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+edge <- read.delim(paste0(output_for_cytoscape, "/merge_CytoscapeInput-edges-9.txt"))
+edge <- edge %>% dplyr::arrange(desc(weight)) 
+colnames(edge)
+colnames(edge) <- c("source", "target","weight","direction","fromAltName","toAltName")
+
+node <- read.delim(paste0(output_for_cytoscape, "/merge_CytoscapeInput-nodes-9.txt"))
+colnames(node)  
+node$Cluster <- as.factor(df_cluster9$cluster)
+colnames(node) <- c("id","altName","module", "node_attributes") 
+
+createNetworkFromDataFrames(node,edge[1:200,], title="Module 9 merge network day 28", collection="DataFrame Example")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# use other pre-set visual style
+setVisualStyle('Marquee')
+
+# set up my own style
+style.name = "myStyle"
+defaults <- list(NODE_SHAPE="diamond",
+                 NODE_SIZE=30,
+                 EDGE_TRANSPARENCY=120,
+                 NODE_LABEL_POSITION="W,E,c,0.00,0.00")
+nodeLabels <- mapVisualProperty('node label','id','p')
+nodeFills <- mapVisualProperty('node fill color','node_attributes','d',c("KO UP","WT UP"), c("#FF9900","#66AAAA"))
+arrowShapes <- mapVisualProperty('Edge Target Arrow Shape','interaction','d',c("activates","inhibits","interacts"),c("Arrow","T","None"))
+edgeWidth <- mapVisualProperty('edge width','weight','p')
+
+createVisualStyle(style.name, defaults, list(nodeLabels,nodeFills,arrowShapes,edgeWidth))
+setVisualStyle(style.name)
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+BiocManager::install("STRINGdb")
+library(STRINGdb)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ppi <- "/Users/lamine/INEM/Projets/Fabiola/Outputs/DW_DK/PPI"
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Obtenir les interactions PPI
+string_db <- STRINGdb$new(version = "12", species = 10090, score_threshold = 200, input_directory = "")
+# Préparer la liste des gènes pour la recherche dans STRING
+ppi_genes <- colnames(datExpr)
+# Mapper les noms de gènes à STRING IDs
+mapped_genes <- string_db$map(data.frame(gene = ppi_genes), "gene", removeUnmappedRows = TRUE)
+# Obtenir les interactions PPI pour les gènes mappés
+ppi_interactions <- string_db$get_interactions(mapped_genes$STRING_id)
+
+# Filtrer les interactions PPI pour conserver uniquement celles présentes dans les modules WGCNA
+module_genes <- names(datExpr)[merge$colors=="15"]# names(moduleColors[moduleColors != "grey"])  # Exclure les gènes non attribués
+mapped_genes_filtered <- string_db$map(data.frame(gene = module_genes), "gene", removeUnmappedRows = TRUE)
+# Obtenir les interactions PPI pour les gènes mappés
+ppi_interactions_filtered <- string_db$get_interactions(mapped_genes_filtered$STRING_id)
+
+# Exporter les données en CSV pour une utilisation dans Cytoscape
+write.csv(module_genes, file = paste0(ppi, "/string_ppi_module15_mappeed_genes.csv"), row.names = FALSE, col.names = FALSE)
+#write.csv(edges, file = "string_network_edges.csv", row.names = FALSE)
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+hits <- mapped_genes$STRING_id[1:200]
+string_db$plot_network(hits)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+enrichment <- string_db$get_enrichment(mapped_genes_filtered$STRING_id)
+# Visualiser la heatmap d'enrichissement
+head(enrichment)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# get clusters
+clustersList <- string_db$get_clusters(mapped_genes_filtered$STRING_id[1:200])
+# plot first 4 clusters
+par(mfrow=c(2,2))
+for(i in seq(1:4)){
+  string_db$plot_network(clustersList[[i]])
+  }
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Connexion à Cytoscape
+cytoscapePing()
+
+# Préparation des données pour l'exportation
+nodes <- data.frame(id = module_genes, module = df_cluster1$cluster)
+ppi_edges <- data.frame(source = mapped_genes$gene[match(ppi_interactions_filtered$from, mapped_genes$STRING_id)],
+                        target = mapped_genes$gene[match(ppi_interactions_filtered$to, mapped_genes$STRING_id)],
+                        weight = ppi_interactions_filtered$combined_score)
+
+# Création du réseau dans Cytoscape
+createNetworkFromDataFrames(nodes = nodes, edges = ppi_edges, title = "WGCNA Modules with PPI", collection = "WGCNA_PPI")
+
+# Définition et application d'un style pour le réseau
+style.name <- "default"
+style.create <- function(style.name) {
+  createVisualStyle(style.name, defaults = list(
+    NODE_SIZE = 40,
+    EDGE_TRANSPARENCY = 120,
+    EDGE_WIDTH = 2
+  ))
+  
+  # Ajouter un mapping de couleur basé sur le module
+  setNodeColorMapping("module", c("KO UP", "WT UP"), c("#FF9900", "#66AAAA"), style.name)
+  
+  # Ajouter un mapping de label pour les noms des gènes
+  setNodeLabelMapping("id", style.name)
+}
+
+# Créer et appliquer le style
+if (!style.name %in% getVisualStyleNames()) {
+  style.create(style.name)
+}
+setVisualStyle(style.name)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+gene_regulatory_network <- "/Users/lamine/INEM/Projets/Fabiola/Outputs/DW_DK/Gene Regulatory Network"
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Convert the data to have gene in row and Sample in columns
+count_matrix <-as.matrix(t(datExpr))
+# Get Transcription factor first
+# Obtain the Ensembl dataset for the desired organism (e.g., human)
+ensembl <- biomaRt::useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+# Retrieve transcription factor annotations
+tf_annotations <- biomaRt::getBM(attributes = c("ensembl_gene_id", "entrezgene_accession", "hgnc_symbol", "ucsc", "gene_biotype",  "chromosome_name", "go_id", "name_1006"),
+                        filters = "go",
+                        values = c("GO:0003700"),  # GO term for transcription factor activity
+                        mart = ensembl)
+
+gene_list <- names(datExpr)
+# Extract known transcription factors from the gene list
+known_tfs <- gene_list[gene_list %in% tf_annotations$entrezgene_accession]
+
+# Print the list of known transcription factors
+print(known_tfs)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Calculate the networks
+weight_matrix_geni3 <- GENIE3(count_matrix, regulators = known_tfs)
+# Group by regulators
+grouplink <- getLinkList(weight_matrix_geni3, threshold = 0.01) %>%
+  #dplyr::filter(weight>0) %>%
+  dplyr::group_by(regulatoryGene) %>%
+  #dplyr::select(regulatoryGene, targetGene) %>%
+  dplyr::mutate(AlltargetGene = list(targetGene)) %>%
+  dplyr::mutate(meanweight = mean(weight)) %>%
+  dplyr::select(regulatoryGene, AlltargetGene, meanweight) %>%
+  dplyr::distinct()
+for (i in 1:length(grouplink$AlltargetGene)){
+  grouplink$Size[i] <- length(grouplink$AlltargetGene[[i]])
+}
+
+# Get list of the network
+  
+linkList <- getLinkList(weight_matrix_geni3)
+linkList <- linkList %>% dplyr::arrange(desc(weight))
+linkList <- linkList[linkList$weight > 0.01, ]
+
+# Save the network to a file
+write.table(linkList, file = paste0(gene_regulatory_network, "/gene_regulatory_network.txt"), row.names = FALSE)
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Visualiser la distribution des poids d'interaction
+ggplot(linkList, aes(x = weight)) +
+  geom_histogram(fill = "blue", color = "black") + stat_bin(breaks = 50) +
+  theme_minimal() +
+  labs(title = "Distribution des scores d'interaction with TFs", x = "Score d'interaction", y = "Fréquence")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Create the heatmap
+heatmap_plot <- make_heatmap_ggplot(
+  data = linkList, y_name = "Regulatory Gene", x_name = "Target Gene", ntop = 50, x_axis_position = "top", legend_position = "right",
+  color = "purple", legend_title = "Weight", size = 12
+)  
+
+
+# Display the plot
+print(heatmap_plot)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Plot_regulatory_network <- function(data, n = 50, xlab = "GENIE3 Weight rank", ylab = "Regulatory -> Target Genes Interaction", color = "purple"){
+  # filter results to top N interactions
+setected_data <- data %>%
+  #arrange(weight) %>%
+  slice_head(n = n) %>%
+  mutate(id = fct_inorder(paste0(regulatoryGene, " -> ", targetGene)))
+
+# visualize median rank
+setected_data %>%
+  mutate(id = fct_reorder(id, weight, .desc = FALSE)) %>%
+  ggplot(aes(y = id, x = weight, fill = weight)) +
+  geom_bar(stat = "identity") + 
+  scale_fill_gradient(low = "whitesmoke", high = color) +
+  xlab(xlab) + ylab(ylab) +
+  theme_cowplot() +
+  theme(axis.text.x = element_text(size = 8, angle = 60, hjust = 1, vjust = 1))
+}
+
+Plot_regulatory_network(data = linkList, n = 50)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+weight_matrix_geni3_All <- GENIE3(count_matrix)
+
+# Group by regulators
+grouplink_All <- getLinkList(weight_matrix_geni3_All, threshold = 0.01) %>%
+  #dplyr::filter(weight>0) %>%
+  dplyr::group_by(regulatoryGene) %>%
+  #dplyr::select(regulatoryGene, targetGene) %>%
+  dplyr::mutate(AlltargetGene = list(targetGene)) %>%
+  dplyr::mutate(meanweight = mean(weight)) %>%
+  dplyr::select(regulatoryGene, AlltargetGene, meanweight) %>%
+  dplyr::distinct()
+for (i in 1:length(grouplink_All$AlltargetGene)){
+  grouplink_All$Size[i] <- length(grouplink_All$AlltargetGene[[i]])
+}
+
+# Get list of the network
+  
+linkList_All <- getLinkList(weight_matrix_geni3_All)
+linkList_All <- linkList_All %>% dplyr::arrange(desc(weight))
+linkList_All <- linkList_All[linkList_All$weight > 0.01, ]
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Create the heatmap
+heatmap_plot <- make_heatmap_ggplot(
+  data = linkList_All, y_name = "Regulatory Gene", x_name = "Target Gene", ntop = 40, x_axis_position = "top", legend_position = "right",
+  color = "purple", legend_title = "Weight", size = 12
+)  
+
+
+# Display the plot
+print(heatmap_plot)
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Visualiser la distribution des poids d'interaction
+ggplot(linkList_All, aes(x = weight)) +
+  geom_histogram(fill = "blue", color = "black") + stat_bin(breaks = 50) +
+  theme_minimal() +
+  labs(title = "Distribution des scores d'interaction All", x = "Score d'interaction", y = "Fréquence")
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# filter results to top N interactions
+n <- 30
+top_n_caf_tumor <- linkList_All %>%
+  #arrange(weight) %>%
+  slice_head(n = n) %>%
+  mutate(id = fct_inorder(paste0(regulatoryGene, " -> ", targetGene)))
+
+# visualize median rank
+top_n_caf_tumor %>%
+  mutate(id = fct_reorder(id, weight, .desc = FALSE)) %>%
+  ggplot(aes(y = id, x = weight, fill = weight)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "whitesmoke", high = "purple") +
+  xlab("GENIE3 Weight rank") + ylab("Regulatory -> Target Genes Interaction") +
+  theme_cowplot() +
+  theme(axis.text.x = element_text(size = 8, angle = 60, hjust = 1, vjust = 1))
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+## ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
